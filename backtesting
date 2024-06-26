@@ -1,0 +1,150 @@
+// @version=5
+// 根据vwma确定中轴
+// 根据atr确定波动率
+// 根据dca加仓
+// 在15min下效果最好，其他周期要重新调参
+
+// bug：
+// - 无
+
+// 优化：
+// - todo：DCA加仓太快，新增满足低于上次加仓价dcaAddLine
+// - short及dca没有写
+
+// 优化：
+// - numberOfDCAOrders应该直接计算出来
+
+// 策略默认设置
+strategy("VAD Strategy", 
+   overlay=true, default_qty_type = strategy.cash,  initial_capital = 1000000, commission_type = strategy.commission.percent,  commission_value = 0.1  )
+
+
+// 策略设置
+float k = input.float(1.6, '核心系数', group = '策略设置')
+
+// DCA设置
+float baseOrderAmount = input.float(100000, "基础订单金额 ($)", group="DCA设置")
+float dcaMultiplier = input.float(1.6, "DCA 倍数", group="DCA设置", tooltip="每次加仓乘以倍数") 
+int numberOfDCAOrders = input.int(4, "DCA 订单数量", group="DCA设置", tooltip="最多加仓几次") //1 1.6 2.56 4 = 9.16 + 6.5 =15.66
+
+
+// 初始化设置
+// todo：这里的var全局变量是否会有问题？
+var int addLongCounter = 1  
+// var int addShortCounter = 1
+var float allqty = 0
+var float lastDCAPrice = 0.0  // 记录上次 DCA 加仓的价格
+var int totalLongTrades = 0
+// var int totalShortTrades = 0 
+float atrValue = ta.atr(14)
+float dcaAddLine = k * atrValue
+float takeProfitPercent = k * atrValue
+float stopLossPercent = k * atrValue
+
+
+// 1 交易信号
+// 计算vwma数据
+float vwma_above = ta.vwma(hlc3,14) + k * atrValue
+float vwma_below = ta.vwma(hlc3,14) - k * atrValue
+// 生成交易信号
+bool longSignal = (low <= vwma_below) 
+bool shortSignal = (high >= vwma_above)
+
+
+// 2 开仓与加仓逻辑
+// 绘制VWMA、RSI_MFI、信号
+plot(vwma_above, "VWMA上轨", color=color.green)
+plot(vwma_below, "VWMA下轨", color=color.red)
+
+// 绘制盈亏标签
+plotPNLLabel() =>
+    pnlValue = (close - strategy.position_avg_price) * allqty
+    pnlPercent = (pnlValue / strategy.equity) * 100
+    message = "PNL: " + str.tostring(math.round(pnlValue, 2)) + ' ' + syminfo.currency + "\n"
+    message += "PNL%: " + str.tostring(math.round(pnlPercent, 2)) + '%'
+    label.new(bar_index + 1, yloc = yloc.price, text = message, style = label.style_label_down, textcolor = color.white, y = high * 1.02 )
+
+// 2.1 根据信号决定持仓
+// 做多情况下
+if longSignal and totalLongTrades == 0
+    // strategy.close(id="SHORT", comment="Close Short")
+    strategy.order(id="LONG", direction=strategy.long, comment = "LongOpen " , qty = baseOrderAmount / close)
+    lastDCAPrice := baseOrderAmount
+    allqty := baseOrderAmount / close
+    totalLongTrades := 1
+    // alert("新做多交易 {{ticker}}", freq=alert.freq_once_per_bar_close)
+
+// // 做空情况下
+// if shortSignal and totalShortTrades == 0
+//     // strategy.close(id="SHORT", comment="Close Short")
+//     strategy.order(id="SHORT", direction=strategy.short, comment = "ShortOpen " , qty = baseOrderAmount / close)
+//     lastDCAPrice := baseOrderAmount
+//     allqty := baseOrderAmount / close
+//     totalShortTrades := 1
+
+// 2.2 DCA加仓
+// 做多情况下
+if (longSignal and 
+     totalLongTrades > 0 and 
+     totalLongTrades <= numberOfDCAOrders and 
+     close <= (strategy.position_avg_price - dcaAddLine)) // todo：DCA加仓太快，新增满足低于上次加仓价dcaAddLine
+    lastDCAPrice := lastDCAPrice * dcaMultiplier
+    strategy.order(id="LONG", direction=strategy.long, comment = "LongAdd # " + str.tostring(addLongCounter), qty = lastDCAPrice / close)
+    addLongCounter := addLongCounter + 1
+    allqty := allqty + lastDCAPrice / close
+    totalLongTrades := totalLongTrades + 1
+    // alert("新DCA加仓 {{ticker}}", freq=alert.freq_once_per_bar_close)
+
+// // 做空情况下
+// if (shortSignal and
+//      totalShortTrades > 0 and 
+//      totalShortTrades <= numberOfDCAOrders and 
+//      close >= (strategy.position_avg_price + dcaAddLine)) // todo：这里加仓太快，新增满足低于上次加仓价dcaAddLine
+//     lastDCAPrice := lastDCAPrice * dcaMultiplier
+//     strategy.order(id="SHORT", direction=strategy.short, comment = "ShortAdd # " + str.tostring(addShortCounter), qty = lastDCAPrice / close)
+//     addShortCounter := addShortCounter + 1
+//     allqty := allqty + lastDCAPrice / close
+//     totalShortTrades := totalShortTrades + 1
+
+// 2.3 止盈与止损逻辑
+// 做多情况下
+if (totalLongTrades > 0)
+    if shortSignal and strategy.openprofit >= takeProfitPercent
+        strategy.close(id="LONG", comment="Take Profit" + str.tostring(strategy.opentrades))
+        // alert("止盈平仓 {{ticker}}", freq=alert.freq_once_per_bar_close)
+        addLongCounter := 1
+        totalLongTrades := 0
+        plotPNLLabel()
+        // strategy.order(id="SHORT", direction=strategy.short, comment = "Short Open", qty = baseOrderAmount / close)
+    
+    else if shortSignal and strategy.openprofit >= - stopLossPercent
+        strategy.close(id="LONG", comment="Stop Loss" + str.tostring(strategy.opentrades) )
+        // alert("止损平仓 {{ticker}}", freq=alert.freq_once_per_bar_close)
+        addLongCounter := 1
+        totalLongTrades := 0
+        // strategy.order(id="SHORT", direction=strategy.short, comment = "Short Open", qty = baseOrderAmount / close)
+        plotPNLLabel()
+    
+// // 做空情况下
+// if (totalShortTrades > 0)
+//     if longSignal and strategy.openprofit >= takeProfitPercent
+//         strategy.close(id="SHORT", comment="Take Profit" + str.tostring(strategy.opentrades))
+//         // alert("止盈平仓 {{ticker}}", freq=alert.freq_once_per_bar_close)
+//         addShortCounter := 1
+//         totalShortTrades := 0
+//         plotPNLLabel()
+//         // strategy.order(id="SHORT", direction=strategy.short, comment = "Short Open", qty = baseOrderAmount / close)
+    
+//     else if longSignal and strategy.openprofit >= - stopLossPercent
+//         strategy.close(id="SHORT", comment="Stop Loss" + str.tostring(strategy.opentrades) )
+//         // alert("止损平仓 {{ticker}}", freq=alert.freq_once_per_bar_close)
+//         addShortCounter := 1
+//         totalShortTrades := 0
+//         // strategy.order(id="SHORT", direction=strategy.short, comment = "Short Open", qty = baseOrderAmount / close)
+//         plotPNLLabel()
+
+// 绘制持仓成本、add加仓信号价格
+plot(strategy.position_avg_price, title="持仓成本", color=color.white, style=plot.style_linebr)
+plot(strategy.position_avg_price + dcaAddLine, title="加仓上线", color=color.new(color.white, 50), style=plot.style_linebr)
+plot(strategy.position_avg_price - dcaAddLine, title="加仓下线", color=color.new(color.white, 50), style=plot.style_linebr)
+
