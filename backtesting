@@ -9,7 +9,7 @@
 
 // 优化：
 // - todo：DCA加仓太快，新增满足低于上次加仓价dcaAddLine
-// - short及dca没有写
+// - short及dca写了，但是没有开启，有bug
 
 // 优化：
 // - numberOfDCAOrders应该直接计算出来
